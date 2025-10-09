@@ -1,24 +1,12 @@
-// Jenkinsfile — Task 3: CI/CD + Security
-// Uses Node 16 (Debian bullseye) Docker agent, installs deps, runs tests,
-// performs a dependency vulnerability scan that FAILS on High/Critical,
-// then builds and pushes a Docker image to Docker Hub.
-//
-// Prereqs in Jenkins:
-// 1) DinD network alias set so DOCKER_HOST=tcp://docker:2376 works.
-// 2) Credentials (Username with password) for Docker Hub with ID: docker-creds.
-
 pipeline {
-
-  /*******************************
-   * Build Agent (Requirement 3.1.i)
-   * - Run everything inside Node 16 container
-   * - Pass DinD TLS env + client certs into the agent container
-   *******************************/
   agent {
+    // Run the whole pipeline inside a Node 16 container
     docker {
-      // Use bullseye to avoid EOL apt repositories (buster is EOL)
       image 'node:16-bullseye'
+      // IMPORTANT: join the same network as the DinD service so 'docker' resolves
+      // Also pass Docker-in-Docker TLS env + certs into the agent container
       args '''
+        --network jenkins
         -v /certs/client:/certs/client:ro
         -e DOCKER_HOST=tcp://docker:2376
         -e DOCKER_CERT_PATH=/certs/client
@@ -27,59 +15,41 @@ pipeline {
     }
   }
 
-  /*******************************
-   * Global environment
-   *******************************/
   environment {
-    // Change to your Docker Hub repo: <username>/<repo>
-    // Used by build/push stages
+    // Change to your own Docker Hub repo: <username>/<repo>
     DOCKERHUB_REPO = 'dipannitakar/aws-express-sample'
   }
 
   stages {
 
-    /*******************************
-     * 1) Install Dependencies (3.1.ii)
-     * - npm install --save
-     *******************************/
     stage('Install Dependencies') {
       steps {
+        // 4.2(b) — LOGS: show npm install output clearly
         sh 'npm install --save'
       }
     }
 
-    /*******************************
-     * 2) Run Unit Tests (3.1.ii)
-     * - If none, continue without failing the pipeline
-     *******************************/
     stage('Run Unit Tests') {
       steps {
+        // 4.2(b) — LOGS: test output (if no tests defined, don’t fail the build here)
         sh 'npm test || echo "No tests defined"'
       }
     }
 
-    /*******************************
-     * 3) Security Scan (Task 3.2)
-     * - Integrate dependency scanner
-     * - MUST fail pipeline on High/Critical issues
-     * - Here we use npm’s audit to enforce "--audit-level=high"
-     *   (Assignment intent: fail on High/Critical);
-     *   npm audit exits non-zero if threshold is met → pipeline fails.
-     *******************************/
     stage('Security Scan') {
       steps {
-        // Show audit report and fail build if High/Critical issues found
-        sh 'npm audit --audit-level=high'
+        // 4.2(b) — LOGS: security results must appear in console
+        // Fail the build if High/Critical issues exist (assignment policy)
+        sh '''
+          echo "[Security] Running npm audit (fail on high)"
+          npm audit --audit-level=high
+        '''
       }
     }
 
-    /*******************************
-     * 4) Setup Docker CLI in Agent
-     * - Install docker client inside the Node container so we can run
-     *   docker build/push against the remote DinD daemon
-     *******************************/
     stage('Setup Docker CLI in Agent') {
       steps {
+        // Install docker CLI in the agent container so we can talk to DinD
         sh '''
           apt-get update
           apt-get install -y docker.io ca-certificates
@@ -88,22 +58,17 @@ pipeline {
       }
     }
 
-    /*******************************
-     * 5) Build Docker Image (3.1.ii)
-     * - Tag with Jenkins BUILD_NUMBER for traceability
-     *******************************/
     stage('Build Docker Image') {
       steps {
+        // 4.2(b) — LOGS: image build output must be visible
         sh 'docker build -t $DOCKERHUB_REPO:$BUILD_NUMBER .'
       }
     }
 
-    /*******************************
-     * 6) Push Docker Image (3.1.ii)
-     * - Uses Jenkins credentials: ID "docker-creds" (username/password)
-     *******************************/
     stage('Push Docker Image') {
       steps {
+        // Jenkins credentials of type "Username with password"
+        // Create in Jenkins as ID: docker-creds (your DockerHub username+password)
         withCredentials([usernamePassword(
           credentialsId: 'docker-creds',
           usernameVariable: 'DOCKER_USER',
@@ -118,15 +83,12 @@ pipeline {
     }
   }
 
-  /*******************************
-   * Post actions (optional, helpful for logs/marks)
-   *******************************/
   post {
-    success {
-      echo " Build, tests, security scan, image build and push succeeded."
-    }
     failure {
-      echo " Pipeline failed. Check the stage that failed in the logs."
+      echo ' Pipeline failed. Check the stage that failed in the logs.'
+    }
+    success {
+      echo " Pipeline succeeded. Image pushed as $DOCKERHUB_REPO:$BUILD_NUMBER"
     }
   }
 }
