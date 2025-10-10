@@ -1,16 +1,13 @@
 pipeline {
+  /* Run all stages inside a Node 16 container launched by the Docker plugin.
+     The controller talks to DinD via DOCKER_HOST (set globally).
+     Inside this container we mount DinD’s socket so `docker` CLI works. */
   agent {
-    // Run the whole pipeline inside a Node 16 container
     docker {
       image 'node:16-bullseye'
-      // IMPORTANT: join the same network as the DinD service so 'docker' resolves
-      // Also pass Docker-in-Docker TLS env + certs into the agent container
       args '''
-        --network jenkins
-        -v /certs/client:/certs/client:ro
-        -e DOCKER_HOST=tcp://docker:2376
-        -e DOCKER_CERT_PATH=/certs/client
-        -e DOCKER_TLS_VERIFY=1
+        -u 0:0
+        -v /var/run/docker.sock:/var/run/docker.sock
       '''
     }
   }
@@ -21,35 +18,29 @@ pipeline {
   }
 
   stages {
-
     stage('Install Dependencies') {
       steps {
-        // 4.2(b) — LOGS: show npm install output clearly
         sh 'npm install --save'
       }
     }
 
     stage('Run Unit Tests') {
       steps {
-        // 4.2(b) — LOGS: test output (if no tests defined, don’t fail the build here)
+        // OK if no tests defined; don't fail the build
         sh 'npm test || echo "No tests defined"'
       }
     }
 
     stage('Security Scan') {
       steps {
-        // 4.2(b) — LOGS: security results must appear in console
-        // Fail the build if High/Critical issues exist (assignment policy)
-        sh '''
-          echo "[Security] Running npm audit (fail on high)"
-          npm audit --audit-level=high
-        '''
+        // Satisfies “dependency vulnerability scanner” requirement
+        sh 'npm audit --audit-level=high'
       }
     }
 
     stage('Setup Docker CLI in Agent') {
       steps {
-        // Install docker CLI in the agent container so we can talk to DinD
+        // Install the docker client inside the Node container
         sh '''
           apt-get update
           apt-get install -y docker.io ca-certificates
@@ -60,19 +51,18 @@ pipeline {
 
     stage('Build Docker Image') {
       steps {
-        // 4.2(b) — LOGS: image build output must be visible
+        // Build from the Dockerfile at repo root
         sh 'docker build -t $DOCKERHUB_REPO:$BUILD_NUMBER .'
       }
     }
 
     stage('Push Docker Image') {
       steps {
-        // Jenkins credentials of type "Username with password"
-        // Create in Jenkins as ID: docker-creds (your DockerHub username+password)
+        // Jenkins creds of type "Username with password", id: docker-creds
         withCredentials([usernamePassword(
-          credentialsId: 'docker-creds',
-          usernameVariable: 'DOCKER_USER',
-          passwordVariable: 'DOCKER_PASS'
+            credentialsId: 'docker-creds',
+            usernameVariable: 'DOCKER_USER',
+            passwordVariable: 'DOCKER_PASS'
         )]) {
           sh '''
             echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
@@ -84,11 +74,14 @@ pipeline {
   }
 
   post {
+    always {
+      echo "Build finished (result: ${currentBuild.currentResult})."
+    }
     failure {
-      echo ' Pipeline failed. Check the stage that failed in the logs.'
+      echo 'Pipeline failed. Check the stage that failed in the logs.'
     }
     success {
-      echo " Pipeline succeeded. Image pushed as $DOCKERHUB_REPO:$BUILD_NUMBER"
+      echo 'Pipeline succeeded!'
     }
   }
 }
