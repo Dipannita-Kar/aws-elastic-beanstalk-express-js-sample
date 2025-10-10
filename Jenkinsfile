@@ -16,8 +16,8 @@ pipeline {
   }
 
   environment {
-    // Change to your own Docker Hub repo: <username>/<repo>
-    DOCKERHUB_REPO = 'dipannitakar/aws-express-sample'
+    
+    DOCKERHUB_REPO = 'dipannitakm/aws-express-sample'
   }
 
   stages {
